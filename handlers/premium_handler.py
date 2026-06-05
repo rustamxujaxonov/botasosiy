@@ -63,7 +63,7 @@ async def buy_plan(callback: CallbackQuery, state: FSMContext):
         f"👤 <b>Karta egasi:</b>\n"
         f"<code>{PAYMENT_CARD_OWNER}</code>\n\n"
         f"📸 To'lovni amalga oshirgach, <b>chek rasmini</b> shu yerga yuboring.\n"
-        f"Admin 5–30 daqiqa ichida obunangizni faollashtiradi.\n\n"
+        f"Admin 5 daqiqa ichida obunangizni faollashtiradi. Muammo bo'lsa @flmy8 ga murojaat qiling. \n\n"
         f"⬇️ Chek rasmini yuboring:",
         reply_markup=kb_payment_sent()
     )
