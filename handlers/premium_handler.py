@@ -120,7 +120,7 @@ async def receive_receipt(message: Message, state: FSMContext):
     await message.answer(
         "✅ <b>Chekingiz qabul qilindi!</b>\n\n"
         "⏳ Admin tekshirib, obunangizni faollashtiradi.\n"
-        "Odatda bu 5–30 daqiqa ichida amalga oshiriladi.\n\n"
+        "Odatda bu 5 daqiqa ichida amalga oshiriladi. Iltimos muammo bo'lsa @flmy8 ga murojaat qiling. \n\n"
         "Obuna faollashtirilgach, xabar yuboriladi."
     )
 
