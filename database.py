@@ -113,9 +113,21 @@ class PaymentRequest(Base):
 
 async def init_db():
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("✅ Ma'lumotlar bazasi tayyor")
+        # 1. Eski jadvalni tekshirish va kerak bo'lsa tuzatish
+        try:
+            # Agar id ustuni yo'q bo'lsa, qo'shamiz
+            await conn.run_sync(lambda s: s.execute("""
+                ALTER TABLE search_queue 
+                ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY;
+            """))
+            logger.info("✅ search_queue jadvalida id ustuni tekshirildi/qo'shildi")
+        except Exception as e:
+            logger.warning(f"search_queue tuzatishda xato: {e}")
 
+        # 2. Barcha modellarni yaratish/yangilash
+        await conn.run_sync(Base.metadata.create_all)
+        
+    logger.info("✅ Ma'lumotlar bazasi muvaffaqiyatli tayyorlandi")
 
 # ============================================================
 # USER
