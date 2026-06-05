@@ -110,17 +110,11 @@ class PaymentRequest(Base):
 # ============================================================
 # DB INIT
 # ============================================================
-
 async def init_db():
     async with engine.begin() as conn:
-        # Eski search_queue ni o'chirib, yangisini yaratish (eng ishonchli)
-        await conn.run_sync(lambda s: s.execute("DROP TABLE IF EXISTS search_queue CASCADE"))
-        
-        # Barcha jadvallarni yaratish
         await conn.run_sync(Base.metadata.create_all)
-        
-    logger.info("✅ Ma'lumotlar bazasi tozalab qayta yaratildi!")
-# ============================================================
+    logger.info("✅ Ma'lumotlar bazasi muvaffaqiyatli yaratildi!")
+#===========
 # USER
 # ============================================================
 
