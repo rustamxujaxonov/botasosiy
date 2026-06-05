@@ -184,23 +184,18 @@ async def update_profile(user_id: int, **kwargs):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def is_premium(user_id: int) -> bool:
+    from datetime import timezone
     async with AsyncSessionLocal() as s:
-        prem = await s.get(Premium, user_id)   # unique user_id = PK emas, ammo unique
-        # get() PK bo'yicha ishlaydi; bu yerda id PK, user_id unique
-        # shuning uchun select ishlatamiz
         result = await s.execute(
-            select(Premium).where(Premium.user_id == user_id)
+            select(Premium.expires_at).where(Premium.user_id == user_id)
         )
-        prem = result.scalar_one_or_none()
-        if not prem:
+        expires = result.scalar_one_or_none()
+        if expires is None:
             return False
-        # Timezone-aware solishtiruv
-        expires = prem.expires_at
-        if expires.tzinfo is not None:
-            from datetime import timezone
-            now = datetime.now(timezone.utc)
-        else:
-            now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+        # DB timezone-naive bo'lsa ham xavfsiz solishtir
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
         return expires > now
 
 
@@ -229,6 +224,7 @@ async def get_premium_info(user_id: int) -> Optional[Premium]:
         result = await s.execute(
             select(Premium).where(Premium.user_id == user_id)
         )
+        # expire_on_commit=False → session kapanganida ham field lari o'qiladi
         return result.scalar_one_or_none()
 
 
@@ -244,8 +240,10 @@ async def create_payment_request(user_id: int, plan: str,
                                   photo_file_id=photo_file_id,
                                   message_id=message_id)
             s.add(req)
-        await s.refresh(req)
-        return req.id
+            # flush → DB ga yozadi, commit oldidan id olamiz
+            await s.flush()
+            req_id = req.id
+        return req_id
 
 
 async def get_payment_request(request_id: int) -> Optional[PaymentRequest]:
@@ -295,8 +293,10 @@ async def remove_from_queue(user_id: int):
 
 async def is_in_queue(user_id: int) -> bool:
     async with AsyncSessionLocal() as s:
-        q = await s.get(SearchQueue, user_id)
-        return q is not None
+        result = await s.execute(
+            select(SearchQueue.user_id).where(SearchQueue.user_id == user_id)
+        )
+        return result.scalar_one_or_none() is not None
 
 
 async def find_match(user_id: int, user_gender: str,
@@ -327,8 +327,9 @@ async def create_chat(user1_id: int, user2_id: int) -> int:
         async with s.begin():
             chat = ActiveChat(user1_id=user1_id, user2_id=user2_id)
             s.add(chat)
-        await s.refresh(chat)
-        return chat.id
+            await s.flush()
+            chat_id = chat.id
+        return chat_id
 
 
 async def get_chat_partner(user_id: int) -> Optional[int]:
@@ -357,5 +358,11 @@ async def end_chat(user_id: int):
 
 
 async def is_in_chat(user_id: int) -> bool:
-    partner = await get_chat_partner(user_id)
-    return partner is not None
+    async with AsyncSessionLocal() as s:
+        result = await s.execute(
+            select(ActiveChat.id).where(
+                (ActiveChat.user1_id == user_id) |
+                (ActiveChat.user2_id == user_id)
+            )
+        )
+        return result.scalar_one_or_none() is not None
