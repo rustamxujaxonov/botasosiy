@@ -14,7 +14,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-
+from handlers import referral_handler
+dp.include_router(referral_handler.router)
 from config import BOT_TOKEN
 from database import init_db
 from handlers import (
