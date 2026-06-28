@@ -4,6 +4,7 @@ Tuzatishlar:
 - start_registration endi message emas, bot + chat_id qabul qiladi
 - State check EditProfile bilan to'g'ri ishlaydi
 - FSM to'g'ri tartibda: gender → name → age → region
+- Referral tizimi qo'shildi (funksiya ICHIDA, to'g'ri joyda)
 """
 
 import logging
@@ -38,7 +39,6 @@ async def reg_gender(callback: CallbackQuery, state: FSMContext):
     if current and "EditProfile" in str(current):
         return
 
-    # Ro'yxatdan o'tish boshlangan bo'lsa yoki hech qanday state yo'q bo'lsa
     gender = "male" if callback.data == "gender_male" else "female"
     gender_text = "👦 Yigit" if gender == "male" else "👧 Qiz"
 
@@ -118,14 +118,22 @@ async def reg_region(callback: CallbackQuery, state: FSMContext):
     display_name = data.get("display_name", "Anonim")
     age          = data.get("age", 18)
     gender_text  = "👦 Yigit" if gender == "male" else "👧 Qiz"
+    user_id      = callback.from_user.id
 
     await complete_registration(
-        user_id=callback.from_user.id,
+        user_id=user_id,
         gender=gender,
         display_name=display_name,
         age=age,
         region=region
     )
+
+    # ✅ Referral tekshirish — state.clear() DAN OLDIN (state_data kerak)
+    referrer_id = data.get("pending_referrer_id")
+    if referrer_id:
+        from handlers.referral_handler import confirm_referral_after_registration
+        await confirm_referral_after_registration(user_id, referrer_id, callback.bot)
+
     await state.clear()
 
     await callback.message.edit_text(
@@ -136,12 +144,7 @@ async def reg_region(callback: CallbackQuery, state: FSMContext):
         f"📍 Viloyat: <b>{region}</b>\n\n"
         f"✅ Endi botdan foydalanishingiz mumkin!"
     )
-    # complete_registration dan keyin:
-state_data = await state.get_data()
-referrer_id = state_data.get("pending_referrer_id")
-if referrer_id:
-    from handlers.referral_handler import confirm_referral_after_registration
-    await confirm_referral_after_registration(user_id, referrer_id, bot)
+
     from handlers.menu_handler import send_main_menu
-    await send_main_menu(callback.bot, callback.message.chat.id, callback.from_user.id)
+    await send_main_menu(callback.bot, callback.message.chat.id, user_id)
     await callback.answer()
