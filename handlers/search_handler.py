@@ -1,216 +1,251 @@
 """
-search_handler.py
-Tuzatishlar:
-- find_match endi database ichida transaction bilan ishlaydi (race condition yo'q)
-- create_chat chaqiruvi olib tashlandi (find_match o'zi yaratadi)
-- asyncio.create_task xavfsiz ishlatiladi
-- None text crash'i yo'q
+search_handler.py — Yaxshilangan qidiruv tizimi
+
+Muammo (oldin):
+  - Vaqt tugasa "topilmadi, keyinroq urinib ko'ring" deb TO'XTATIB qo'yardi
+
+Yechim (endi):
+  - Har 30 sekundda "hali qidiryapman..." xabari chiqaradi
+  - Foydalanuvchi o'zi to'xtatgunicha qidiraveradi
+  - Navbatdagi odamlar sonini ko'rsatadi
+  - "Bekor qilish" tugmasi har doim ko'rinadi
 """
 
-import logging
 import asyncio
+import logging
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
-from database import (
-    get_user, is_premium,
-    add_to_queue, remove_from_queue, find_match,
-    is_in_queue, is_in_chat, get_chat_partner, end_chat
-)
-from keyboards import kb_in_chat, kb_stop_search, kb_main_menu
+import database as db
+from keyboards import search_keyboard, main_menu_keyboard
 
 logger = logging.getLogger(__name__)
 router = Router()
 
+# Qidiruv intervallari (sekundda)
+CHECK_INTERVAL   = 5    # Har 5 sekundda match qidiriladi
+STATUS_INTERVAL  = 30   # Har 30 sekundda foydalanuvchiga xabar
+MAX_WAIT_MINUTES = 30   # Maksimum kutish (so'ngra qayta so'rash)
 
-async def start_search(message: Message, search_type: str = "any"):
-    """
-    search_type:
-      'any'    - tekin, istalgan jins
-      'female' - premium, qizlar
-      'male'   - premium, yigitlar
-    """
-    user_id = message.from_user.id
-    user = await get_user(user_id)
+class SearchState(StatesGroup):
+    searching = State()
 
-    if not user or not user.get("registered"):
-        await message.answer("❗ Avval ro'yxatdan o'ting. /start bosing.")
+# ============================================================
+# QIDIRUV BOSHLASH
+# ============================================================
+
+@router.callback_query(F.data == "search_any")
+async def start_search_any(callback: CallbackQuery, state: FSMContext):
+    await _start_search(callback.message, callback.from_user.id, state, "any")
+    await callback.answer()
+
+@router.callback_query(F.data == "search_male")
+async def start_search_male(callback: CallbackQuery, state: FSMContext):
+    await _start_search(callback.message, callback.from_user.id, state, "male")
+    await callback.answer()
+
+@router.callback_query(F.data == "search_female")
+async def start_search_female(callback: CallbackQuery, state: FSMContext):
+    await _start_search(callback.message, callback.from_user.id, state, "female")
+    await callback.answer()
+
+async def _start_search(message: Message, user_id: int, state: FSMContext, search_type: str):
+    """Qidiruvni boshlash"""
+    # Avval boshqa chatda yoki navbatda emasligini tekshirish
+    if await db.is_in_chat(user_id):
+        await message.answer("❗ Siz hozir chat ichida ekansiz. Avval chatni yakunlang.")
         return
 
-    # Agar allaqachon chatda bo'lsa
-    if await is_in_chat(user_id):
-        await message.answer(
-            "⚠️ Siz allaqachon muloqotda ekansiz!\n"
-            "Chatdan chiqish uchun «🚫 Chatdan chiqish» tugmasini bosing.",
-            reply_markup=kb_in_chat()
-        )
+    user = await db.get_user(user_id)
+    if not user or not user["registered"]:
+        await message.answer("❗ Avval ro'yxatdan o'ting.")
         return
 
-    # Agar allaqachon navbatda bo'lsa
-    if await is_in_queue(user_id):
-        await message.answer("⏳ Siz allaqachon qidirish navbatidasiz...")
-        return
+    my_gender = user["gender"]
+    await db.add_to_queue(user_id, my_gender, search_type)
+    await state.set_state(SearchState.searching)
+    await state.update_data(search_type=search_type, my_gender=my_gender, waited=0)
 
-    my_gender = user.get("gender", "male")
+    search_type_text = {
+        "any":    "istalgan",
+        "male":   "erkak",
+        "female": "ayol"
+    }.get(search_type, "istalgan")
 
-    # Avval birini topishga urinish (navbatga qo'shishdan oldin)
-    partner_id = await find_match(user_id, my_gender, search_type)
+    queue_size = await db.get_queue_size()
 
-    if partner_id:
-        # Darhol uchrashuv
-        await _connect_users(message.bot, user_id, partner_id)
-    else:
-        # Navbatga qo'shish
-        await add_to_queue(user_id, my_gender, search_type)
+    msg = await message.answer(
+        f"🔍 <b>Muloqotchi qidirilmoqda...</b>\n\n"
+        f"Qidiruv turi: <b>{search_type_text}</b>\n"
+        f"Navbatda: <b>{queue_size}</b> ta foydalanuvchi\n\n"
+        f"⏳ Muloqotchi topilguncha kuting...\n"
+        f"(O'zingiz bekor qilmasangiz qidiraveradi)",
+        reply_markup=search_keyboard()
+    )
 
-        label = {"any": "🔍 Muloqotchi", "female": "👧 Qiz", "male": "👦 Yigit"}.get(search_type, "🔍 Muloqotchi")
+    # Fon vazifasi sifatida qidiruvni ishga tushirish
+    asyncio.create_task(
+        _search_loop(message, user_id, my_gender, search_type, state, msg.message_id)
+    )
 
-        await message.answer(
-            f"⏳ <b>{label} qidirilmoqda...</b>\n\n"
-            f"Mos muloqotchi topilishi bilan ulanasiz.\n"
-            f"Bekor qilish uchun tugmani bosing.",
-            reply_markup=kb_stop_search()
-        )
+# ============================================================
+# QIDIRUV LOOPI
+# ============================================================
 
-        # Fon rejimda kutish
-        asyncio.create_task(
-            _wait_for_match(message, user_id, my_gender, search_type)
-        )
-
-
-async def _wait_for_match(
-    message: Message, user_id: int, my_gender: str,
-    search_type: str, timeout: int = 120
+async def _search_loop(
+    message: Message,
+    user_id: int,
+    my_gender: str,
+    search_type: str,
+    state: FSMContext,
+    status_msg_id: int
 ):
-    """Fon rejimda mos foydalanuvchi kutish"""
-    waited   = 0
-    interval = 4  # har 4 soniyada tekshirish
+    """
+    Foydalanuvchi bekor qilmaguncha yoki match topilmaguncha ishlaydi.
+    To'xtatmaydi — faqat foydalanuvchi o'zi bekor qiladi.
+    """
+    elapsed = 0
+    status_elapsed = 0
+    bot = message.bot
 
-    while waited < timeout:
-        await asyncio.sleep(interval)
-        waited += interval
+    while True:
+        await asyncio.sleep(CHECK_INTERVAL)
+        elapsed        += CHECK_INTERVAL
+        status_elapsed += CHECK_INTERVAL
 
-        # Hali navbatdami?
-        if not await is_in_queue(user_id):
-            return  # Bekor qilindi yoki allaqachon ulanildi
-
-        # Mos topilganmi? (find_match navbatdan ham olib tashlaydi)
-        partner_id = await find_match(user_id, my_gender, search_type)
-        if partner_id:
-            await _connect_users(message.bot, user_id, partner_id)
+        # FSM holatini tekshirish (bekor qilinganmi?)
+        current_state = await state.get_state()
+        if current_state != SearchState.searching:
+            logger.info(f"User {user_id}: qidiruv bekor qilindi (state o'zgardi)")
             return
 
-    # Timeout — navbatdan chiqarish
-    if await is_in_queue(user_id):
-        await remove_from_queue(user_id)
-        try:
-            premium = await is_premium(user_id)
-            await message.bot.send_message(
-                chat_id=user_id,
-                text=(
-                    "😔 <b>Muloqotchi topilmadi.</b>\n\n"
-                    "Hozircha qidirayotgan foydalanuvchi yo'q.\n"
-                    "Keyinroq qayta urinib ko'ring!"
-                ),
-                reply_markup=kb_main_menu(is_premium_user=premium)
-            )
-        except Exception as e:
-            logger.error(f"Timeout xabar yuborishda xato: {e}")
+        # Navbatda hali turganligini tekshirish
+        if not await db.is_in_queue(user_id):
+            logger.info(f"User {user_id}: navbatdan chiqib ketdi (match topilgan bo'lishi mumkin)")
+            # Match topilgan — chat_handler uni ushlab oladi
+            return
 
+        # Match qidirish
+        partner_id = await db.find_match(user_id, my_gender, search_type)
 
-async def _connect_users(bot, user1_id: int, user2_id: int):
-    """
-    Ikki foydalanuvchiga ulanish xabarini yuborish.
-    Chat allaqachon find_match ichida yaratilgan.
-    """
+        if partner_id:
+            # ✅ MATCH TOPILDI
+            await state.clear()
+            await _on_match_found(bot, user_id, partner_id, message.chat.id, status_msg_id)
+            return
+
+        # Har STATUS_INTERVAL sekundda xabar yangilash
+        if status_elapsed >= STATUS_INTERVAL:
+            status_elapsed = 0
+            minutes = elapsed // 60
+            seconds = elapsed % 60
+
+            queue_size = await db.get_queue_size()
+            wait_text = f"{minutes} daq {seconds} son" if minutes > 0 else f"{seconds} son"
+
+            try:
+                await bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=status_msg_id,
+                    text=(
+                        f"🔍 <b>Muloqotchi qidirilmoqda...</b>\n\n"
+                        f"⏱ Kutish vaqti: <b>{wait_text}</b>\n"
+                        f"👥 Navbatda: <b>{queue_size}</b> ta foydalanuvchi\n\n"
+                        f"🔄 Qidiruv davom etmoqda...\n"
+                        f"Bekor qilish uchun quyidagi tugmani bosing."
+                    ),
+                    reply_markup=search_keyboard(),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass  # Xabar o'chirilgan bo'lsa — davom etish
+
+        # MAX_WAIT_MINUTES dan oshsa — foydalanuvchiga xabar berish (lekin TO'XTATMASLIK)
+        if elapsed > 0 and elapsed % (MAX_WAIT_MINUTES * 60) == 0:
+            try:
+                await bot.send_message(
+                    chat_id=message.chat.id,
+                    text=(
+                        f"⏰ <b>{MAX_WAIT_MINUTES} daqiqa bo'ldi, hali ham qidiryapman.</b>\n\n"
+                        f"Navbatda juda kam odam bor. Qidiruv davom etmoqda...\n"
+                        f"Bekor qilmoqchi bo'lsangiz tugmani bosing."
+                    ),
+                    reply_markup=search_keyboard(),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+# ============================================================
+# MATCH TOPILGANDA
+# ============================================================
+
+async def _on_match_found(bot, user_id: int, partner_id: int,
+                           user_chat_id: int, status_msg_id: int):
+    """Ikki foydalanuvchiga match xabarini yuborish"""
+
+    # Status xabarni yangilash
     try:
-        user1 = await get_user(user1_id)
-        user2 = await get_user(user2_id)
-        prem1 = await is_premium(user1_id)
-        prem2 = await is_premium(user2_id)
-
+        await bot.edit_message_text(
+            chat_id=user_chat_id,
+            message_id=status_msg_id,
+            text="✅ <b>Muloqotchi topildi!</b> Salom deng 👋",
+            parse_mode="HTML"
+        )
+    except Exception:
         await bot.send_message(
-            chat_id=user1_id,
-            text=(
-                "✅ <b>Muloqotchi topildi!</b>\n\n"
-                f"{_partner_info(user2, prem1)}\n\n"
-                "💬 Yozing, muloqot boshlandi!\n\n"
-                "⏭ «Keyingisi» — yangi muloqotchi\n"
-                "🚫 «Chatdan chiqish» — menyuga qaytish"
-            ),
-            reply_markup=kb_in_chat()
+            chat_id=user_chat_id,
+            text="✅ <b>Muloqotchi topildi!</b> Salom deng 👋",
+            parse_mode="HTML"
         )
 
+    # Sherikka ham xabar yuborish
+    try:
         await bot.send_message(
-            chat_id=user2_id,
-            text=(
-                "✅ <b>Muloqotchi topildi!</b>\n\n"
-                f"{_partner_info(user1, prem2)}\n\n"
-                "💬 Yozing, muloqot boshlandi!\n\n"
-                "⏭ «Keyingisi» — yangi muloqotchi\n"
-                "🚫 «Chatdan chiqish» — menyuga qaytish"
-            ),
-            reply_markup=kb_in_chat()
+            chat_id=partner_id,
+            text="✅ <b>Muloqotchi topildi!</b> Salom deng 👋",
+            parse_mode="HTML"
         )
-
     except Exception as e:
-        logger.error(f"Foydalanuvchilarni ulashda xato: {e}")
-        # Xato bo'lsa chatni yopish
-        await end_chat(user1_id)
-
-
-def _partner_info(partner: dict, viewer_is_premium: bool) -> str:
-    if viewer_is_premium:
-        g = "👧" if partner.get("gender") == "female" else "👦"
-        return (
-            f"👤 Muloqotchi:\n"
-            f"{g} Taxallus: <b>{partner.get('display_name', '—')}</b>\n"
-            f"🔢 Yosh: <b>{partner.get('age', '—')}</b>\n"
-            f"📍 Viloyat: <b>{partner.get('region', '—')}</b>"
-        )
-    return "👤 Muloqotchi: <b>Anonim</b>"
-
+        logger.error(f"Partner {partner_id} ga xabar yuborilmadi: {e}")
 
 # ============================================================
-# BUTTON HANDLERS
+# QIDIRUVNI BEKOR QILISH
 # ============================================================
 
-@router.message(F.text == "🔍 Muloqotchi qidirish")
-async def free_search(message: Message):
-    await start_search(message, "any")
+@router.callback_query(F.data == "cancel_search")
+async def cancel_search(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
 
+    await state.clear()
+    await db.remove_from_queue(user_id)
 
-@router.message(F.text.in_({"👧 Qiz qidirish", "👧 Qiz qidirish ⭐"}))
-async def search_girl(message: Message):
-    if not await is_premium(message.from_user.id):
-        from handlers.premium_handler import show_premium_info
-        await show_premium_info(message)
-        return
-    await start_search(message, "female")
+    await callback.message.edit_text(
+        "❌ <b>Qidiruv bekor qilindi.</b>\n\nBoshqa vaqt urinib ko'rishingiz mumkin.",
+        parse_mode="HTML"
+    )
+    await callback.answer("Qidiruv bekor qilindi")
 
+    # Asosiy menyu
+    await callback.message.answer(
+        "Asosiy menyu:",
+        reply_markup=main_menu_keyboard()
+    )
 
-@router.message(F.text.in_({"👦 Yigit qidirish", "👦 Yigit qidirish ⭐"}))
-async def search_boy(message: Message):
-    if not await is_premium(message.from_user.id):
-        from handlers.premium_handler import show_premium_info
-        await show_premium_info(message)
-        return
-    await start_search(message, "male")
+# ============================================================
+# XABAR ORQALI HAM BEKOR QILISH
+# ============================================================
 
-
-@router.message(F.text == "❌ Qidirishni to'xtatish")
-async def cancel_search(message: Message):
+@router.message(SearchState.searching, F.text.in_(["❌ Bekor qilish", "/stop"]))
+async def cancel_search_by_text(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    premium = await is_premium(user_id)
+    await state.clear()
+    await db.remove_from_queue(user_id)
 
-    if await is_in_queue(user_id):
-        await remove_from_queue(user_id)
-        await message.answer(
-            "❌ Qidirish to'xtatildi.",
-            reply_markup=kb_main_menu(is_premium_user=premium)
-        )
-    else:
-        await message.answer(
-            "ℹ️ Siz qidirish navbatida emassiz.",
-            reply_markup=kb_main_menu(is_premium_user=premium)
-        )
+    await message.answer(
+        "❌ <b>Qidiruv bekor qilindi.</b>",
+        reply_markup=main_menu_keyboard(),
+        parse_mode="HTML"
+    )
