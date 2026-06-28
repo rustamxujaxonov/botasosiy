@@ -1,22 +1,20 @@
 """
 database.py — SQLAlchemy 2.x async ORM
-Barcha muammolar tuzatildi:
-- Chat jadvalida to'liq CRUD
-- Queue race condition himoyasi (SELECT FOR UPDATE)
-- Premium muddati tekshiruvi avtomatik
+Yangiliklar:
+- Referral tizimi qo'shildi (5 ta do'st = 1 kunlik bepul premium)
+- Qidiruv statistikasi
+- Barcha oldingi funksiyalar saqlab qolindi
 """
 
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-
 from sqlalchemy import (
     BigInteger, Boolean, Column, DateTime, Integer,
-    String, Text, select, update, delete, and_, or_
+    String, Text, select, update, delete, and_, or_, func
 )
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-
 from config import DATABASE_URL
 
 logger = logging.getLogger(__name__)
@@ -26,8 +24,8 @@ engine = create_async_engine(
     echo=False,
     pool_size=10,
     max_overflow=20,
-    pool_pre_ping=True,           # Railway disconnect'dan himoya
-    pool_recycle=300,             # 5 daqiqada ulanishni yangilash
+    pool_pre_ping=True,
+    pool_recycle=300,
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -36,7 +34,6 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False
 )
 
-
 # ============================================================
 # MODELS
 # ============================================================
@@ -44,81 +41,83 @@ AsyncSessionLocal = async_sessionmaker(
 class Base(DeclarativeBase):
     pass
 
-
 class User(Base):
     __tablename__ = "users"
 
-    id           = Column(BigInteger, primary_key=True)   # Telegram user_id
-    username     = Column(String(64), nullable=True)
-    full_name    = Column(String(128), nullable=True)
-    gender       = Column(String(10), nullable=True)
-    display_name = Column(String(32), nullable=True)
-    age          = Column(Integer, nullable=True)
-    region       = Column(String(64), nullable=True)
-    registered   = Column(Boolean, default=False)
-    created_at   = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at   = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
-                          onupdate=lambda: datetime.now(timezone.utc))
+    id            = Column(BigInteger, primary_key=True)
+    username      = Column(String(64), nullable=True)
+    full_name     = Column(String(128), nullable=True)
+    gender        = Column(String(10), nullable=True)
+    display_name  = Column(String(32), nullable=True)
+    age           = Column(Integer, nullable=True)
+    region        = Column(String(64), nullable=True)
+    registered    = Column(Boolean, default=False)
+    # Referral
+    referrer_id   = Column(BigInteger, nullable=True)   # Kim taklif qildi
+    ref_count     = Column(Integer, default=0)           # Nechta do'st chaqirdi
+    ref_premium_given = Column(Boolean, default=False)   # 5ta uchun premium olganmi
 
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+                           onupdate=lambda: datetime.now(timezone.utc))
 
 class Premium(Base):
     __tablename__ = "premiums"
 
-    id         = Column(Integer, primary_key=True, autoincrement=True)
-    user_id    = Column(BigInteger, nullable=False, index=True)
-    plan       = Column(String(32), nullable=False)
-    granted_by = Column(BigInteger, nullable=True)
-    granted_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    user_id     = Column(BigInteger, nullable=False, index=True)
+    plan        = Column(String(32), nullable=False)
+    granted_by  = Column(BigInteger, nullable=True)
+    granted_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at  = Column(DateTime(timezone=True), nullable=False)
 
 class SearchQueue(Base):
     __tablename__ = "search_queue"
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
     user_id     = Column(BigInteger, nullable=False, unique=True, index=True)
-    gender      = Column(String(10), nullable=False)   # user's own gender
+    gender      = Column(String(10), nullable=False)
     search_type = Column(String(10), nullable=False)   # 'any' | 'male' | 'female'
     joined_at   = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
 
 class Chat(Base):
     __tablename__ = "chats"
 
-    id         = Column(Integer, primary_key=True, autoincrement=True)
-    user1_id   = Column(BigInteger, nullable=False, index=True)
-    user2_id   = Column(BigInteger, nullable=False, index=True)
-    started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    ended_at   = Column(DateTime(timezone=True), nullable=True)
-    active     = Column(Boolean, default=True)
-
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    user1_id    = Column(BigInteger, nullable=False, index=True)
+    user2_id    = Column(BigInteger, nullable=False, index=True)
+    started_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    ended_at    = Column(DateTime(timezone=True), nullable=True)
+    active      = Column(Boolean, default=True)
 
 class PaymentRequest(Base):
     __tablename__ = "payment_requests"
 
-    id              = Column(Integer, primary_key=True, autoincrement=True)
-    user_id         = Column(BigInteger, nullable=False, index=True)
-    plan            = Column(String(32), nullable=False)
-    photo_file_id   = Column(String(256), nullable=False)
-    message_id      = Column(Integer, nullable=True)
-    admin_message_id= Column(Integer, nullable=True)
-    status          = Column(String(20), default="pending")  # pending | approved | rejected
-    created_at      = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at      = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    user_id          = Column(BigInteger, nullable=False, index=True)
+    plan             = Column(String(32), nullable=False)
+    photo_file_id    = Column(String(256), nullable=False)
+    message_id       = Column(Integer, nullable=True)
+    admin_message_id = Column(Integer, nullable=True)
+    status           = Column(String(20), default="pending")  # pending | approved | rejected
+    created_at       = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at       = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 # ============================================================
 # DB INIT
 # ============================================================
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("✅ Ma'lumotlar bazasi muvaffaqiyatli yaratildi!")
-#===========
+
+# ============================================================
 # USER
 # ============================================================
 
-async def create_or_update_user(user_id: int, username: str = None, full_name: str = None):
+async def create_or_update_user(user_id: int, username: str = None, full_name: str = None,
+                                 referrer_id: int = None):
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
@@ -134,12 +133,14 @@ async def create_or_update_user(user_id: int, username: str = None, full_name: s
                 id=user_id,
                 username=username,
                 full_name=full_name,
-                registered=False
+                registered=False,
+                referrer_id=referrer_id,
+                ref_count=0,
+                ref_premium_given=False,
             )
             session.add(user)
 
         await session.commit()
-
 
 async def user_exists(user_id: int) -> bool:
     async with AsyncSessionLocal() as session:
@@ -148,7 +149,6 @@ async def user_exists(user_id: int) -> bool:
         )
         return result.scalar_one_or_none() is not None
 
-
 async def get_user(user_id: int) -> Optional[dict]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(User).where(User.id == user_id))
@@ -156,24 +156,20 @@ async def get_user(user_id: int) -> Optional[dict]:
         if not user:
             return None
         return {
-            "id": user.id,
-            "username": user.username,
-            "full_name": user.full_name,
-            "gender": user.gender,
+            "id":           user.id,
+            "username":     user.username,
+            "full_name":    user.full_name,
+            "gender":       user.gender,
             "display_name": user.display_name,
-            "age": user.age,
-            "region": user.region,
-            "registered": user.registered,
+            "age":          user.age,
+            "region":       user.region,
+            "registered":   user.registered,
+            "referrer_id":  user.referrer_id,
+            "ref_count":    user.ref_count,
         }
 
-
-async def complete_registration(
-    user_id: int,
-    gender: str,
-    display_name: str,
-    age: int,
-    region: str
-):
+async def complete_registration(user_id: int, gender: str, display_name: str,
+                                 age: int, region: str):
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
@@ -186,21 +182,108 @@ async def complete_registration(
             user.updated_at   = datetime.now(timezone.utc)
             await session.commit()
 
-
 async def update_profile(user_id: int, **kwargs):
-    """gender, display_name, age, region dan istalganini yangilash"""
     allowed = {"gender", "display_name", "age", "region"}
     data = {k: v for k, v in kwargs.items() if k in allowed}
     if not data:
         return
     data["updated_at"] = datetime.now(timezone.utc)
-
     async with AsyncSessionLocal() as session:
         await session.execute(
             update(User).where(User.id == user_id).values(**data)
         )
         await session.commit()
 
+# ============================================================
+# REFERRAL TIZIMI
+# ============================================================
+
+async def process_referral(new_user_id: int, referrer_id: int) -> bool:
+    """
+    Yangi foydalanuvchi ro'yxatdan o'tganda referrer'ning hisobini oshiradi.
+    Agar referrer 5 ta do'st chaqirgan bo'lsa → 1 kunlik bepul premium beradi.
+    
+    Returns: True — agar premium berilgan bo'lsa
+    """
+    if new_user_id == referrer_id:
+        return False  # O'zini chaqira olmaydi
+
+    async with AsyncSessionLocal() as session:
+        # Referrer'ni olish
+        result = await session.execute(select(User).where(User.id == referrer_id))
+        referrer = result.scalar_one_or_none()
+
+        if not referrer or not referrer.registered:
+            return False
+
+        # Yangi foydalanuvchining referrer_id sini saqlash
+        result2 = await session.execute(select(User).where(User.id == new_user_id))
+        new_user = result2.scalar_one_or_none()
+        if new_user and new_user.referrer_id is None:
+            new_user.referrer_id = referrer_id
+
+        # Referrer hisobini oshirish
+        referrer.ref_count = (referrer.ref_count or 0) + 1
+
+        premium_given = False
+
+        # Har 5 ta do'stda 1 kunlik bepul premium
+        if referrer.ref_count % 5 == 0:
+            # Premium qo'shish
+            existing = await session.execute(
+                select(Premium).where(
+                    Premium.user_id == referrer_id,
+                    Premium.expires_at > datetime.now(timezone.utc)
+                ).order_by(Premium.expires_at.desc())
+            )
+            existing_prem = existing.scalar_one_or_none()
+
+            base = existing_prem.expires_at if existing_prem else datetime.now(timezone.utc)
+            new_expires = base + timedelta(days=1)
+
+            session.add(Premium(
+                user_id=referrer_id,
+                plan="referral_1day",
+                granted_by=None,
+                expires_at=new_expires,
+            ))
+            premium_given = True
+            logger.info(f"🎁 Referral premium: user {referrer_id} ga 1 kunlik premium berildi")
+
+        await session.commit()
+        return premium_given
+
+async def get_referral_stats(user_id: int) -> dict:
+    """Foydalanuvchining referral statistikasini qaytaradi"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            return {"ref_count": 0, "next_premium_in": 5}
+
+        count = user.ref_count or 0
+        next_premium_in = 5 - (count % 5)
+        if next_premium_in == 5 and count > 0:
+            next_premium_in = 5  # Keyingi 5 lik uchun
+
+        return {
+            "ref_count": count,
+            "next_premium_in": next_premium_in,  # Keyingi premiumgacha nechta
+            "total_premiums_earned": count // 5,
+        }
+
+async def get_referral_link_text(user_id: int, bot_username: str) -> str:
+    """Referral havola matnini qaytaradi"""
+    stats = await get_referral_stats(user_id)
+    link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    return (
+        f"🔗 <b>Sizning referral havolangiz:</b>\n"
+        f"<code>{link}</code>\n\n"
+        f"👥 <b>Taklif qilganlar:</b> {stats['ref_count']} ta\n"
+        f"🎁 <b>Keyingi bepul premiumgacha:</b> {stats['next_premium_in']} ta do'st\n"
+        f"⭐ <b>Jami olgan premiumlar:</b> {stats['total_premiums_earned']} ta\n\n"
+        f"💡 Har <b>5 ta do'st</b> taklif qilsangiz — <b>1 kunlik bepul premium</b> olasiz!"
+    )
 
 # ============================================================
 # PREMIUM
@@ -216,7 +299,6 @@ async def is_premium(user_id: int) -> bool:
         )
         return result.scalar_one_or_none() is not None
 
-
 async def get_premium_info(user_id: int) -> Optional[dict]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -229,14 +311,12 @@ async def get_premium_info(user_id: int) -> Optional[dict]:
         if not prem:
             return None
         return {
-            "plan": prem.plan,
+            "plan":       prem.plan,
             "expires_at": prem.expires_at.isoformat(),
         }
 
-
 async def grant_premium(user_id: int, plan: str, days: int, admin_id: int):
     async with AsyncSessionLocal() as session:
-        # Eski premium bormi? Uning ustiga qo'shamiz
         result = await session.execute(
             select(Premium).where(
                 Premium.user_id == user_id,
@@ -245,11 +325,7 @@ async def grant_premium(user_id: int, plan: str, days: int, admin_id: int):
         )
         existing = result.scalar_one_or_none()
 
-        if existing:
-            base = existing.expires_at
-        else:
-            base = datetime.now(timezone.utc)
-
+        base = existing.expires_at if existing else datetime.now(timezone.utc)
         new_expires = base + timedelta(days=days)
 
         prem = Premium(
@@ -261,13 +337,11 @@ async def grant_premium(user_id: int, plan: str, days: int, admin_id: int):
         session.add(prem)
         await session.commit()
 
-
 # ============================================================
 # SEARCH QUEUE
 # ============================================================
 
 async def add_to_queue(user_id: int, gender: str, search_type: str):
-    """Navbatga qo'shish — allaqachon borsa yangilash"""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(SearchQueue).where(SearchQueue.user_id == user_id)
@@ -285,14 +359,12 @@ async def add_to_queue(user_id: int, gender: str, search_type: str):
             ))
         await session.commit()
 
-
 async def remove_from_queue(user_id: int):
     async with AsyncSessionLocal() as session:
         await session.execute(
             delete(SearchQueue).where(SearchQueue.user_id == user_id)
         )
         await session.commit()
-
 
 async def is_in_queue(user_id: int) -> bool:
     async with AsyncSessionLocal() as session:
@@ -301,16 +373,17 @@ async def is_in_queue(user_id: int) -> bool:
         )
         return result.scalar_one_or_none() is not None
 
+async def get_queue_size() -> int:
+    """Navbatdagi umumiy foydalanuvchilar soni"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(func.count(SearchQueue.id))
+        )
+        return result.scalar() or 0
 
 async def find_match(user_id: int, my_gender: str, search_type: str) -> Optional[int]:
-    """
-    Mos juftlikni topish.
-    Muammo: A B ni topdi, B ham A ni topishi mumkin → ikki chat ochiladi.
-    Yechim: SELECT FOR UPDATE WITH SKIP LOCKED ishlatamiz.
-    """
     async with AsyncSessionLocal() as session:
         async with session.begin():
-            # Mening holatim hali navbatdami?
             me = await session.execute(
                 select(SearchQueue)
                 .where(SearchQueue.user_id == user_id)
@@ -318,26 +391,15 @@ async def find_match(user_id: int, my_gender: str, search_type: str) -> Optional
             )
             me_row = me.scalar_one_or_none()
             if not me_row:
-                return None  # allaqachon olib tashlangan
+                return None
 
-            # Mos sheriklarni qidirish
-            # search_type='any' → istalgan jins
-            # search_type='male' → erkak qidirmoqda
-            # search_type='female' → ayol qidirmoqda
-            conditions = [
-                SearchQueue.user_id != user_id,
-            ]
+            conditions = [SearchQueue.user_id != user_id]
 
-            # Men qanday qidiraman?
             if search_type == "female":
                 conditions.append(SearchQueue.gender == "female")
             elif search_type == "male":
                 conditions.append(SearchQueue.gender == "male")
 
-            # Sherik meni qabul qiladimi?
-            # Sherik 'any' qidirsa → har kimni qabul qiladi
-            # Sherik 'female' qidirsa → men female bo'lishim kerak
-            # Sherik 'male' qidirsa → men male bo'lishim kerak
             conditions.append(
                 or_(
                     SearchQueue.search_type == "any",
@@ -349,7 +411,7 @@ async def find_match(user_id: int, my_gender: str, search_type: str) -> Optional
             result = await session.execute(
                 select(SearchQueue)
                 .where(and_(*conditions))
-                .order_by(SearchQueue.joined_at)   # birinchi kirgan birinchi chiqadi
+                .order_by(SearchQueue.joined_at)
                 .limit(1)
                 .with_for_update(skip_locked=True)
             )
@@ -359,29 +421,20 @@ async def find_match(user_id: int, my_gender: str, search_type: str) -> Optional
 
             partner_id = partner_row.user_id
 
-            # Ikkalasini navbatdan olib tashlash (transaction ichida)
             await session.execute(
                 delete(SearchQueue).where(
                     SearchQueue.user_id.in_([user_id, partner_id])
                 )
             )
-            # Chat yaratish ham shu transaction ichida
             session.add(Chat(user1_id=user_id, user2_id=partner_id, active=True))
-
-        return partner_id
-
+            return partner_id
 
 # ============================================================
 # CHAT
 # ============================================================
 
 async def create_chat(user1_id: int, user2_id: int):
-    """
-    find_match allaqachon chat yaratadi.
-    Bu funksiya faqat zapas holat uchun (eski kod bilan moslik).
-    """
     async with AsyncSessionLocal() as session:
-        # Ikkalasi uchun faol chat bormi?
         result = await session.execute(
             select(Chat).where(
                 Chat.active == True,
@@ -393,13 +446,10 @@ async def create_chat(user1_id: int, user2_id: int):
                 )
             )
         )
-        existing = result.scalar_one_or_none()
-        if existing:
-            return  # allaqachon bor
-
+        if result.scalar_one_or_none():
+            return
         session.add(Chat(user1_id=user1_id, user2_id=user2_id, active=True))
         await session.commit()
-
 
 async def is_in_chat(user_id: int) -> bool:
     async with AsyncSessionLocal() as session:
@@ -410,7 +460,6 @@ async def is_in_chat(user_id: int) -> bool:
             )
         )
         return result.scalar_one_or_none() is not None
-
 
 async def get_chat_partner(user_id: int) -> Optional[int]:
     async with AsyncSessionLocal() as session:
@@ -425,9 +474,7 @@ async def get_chat_partner(user_id: int) -> Optional[int]:
             return None
         return chat.user2_id if chat.user1_id == user_id else chat.user1_id
 
-
 async def end_chat(user_id: int):
-    """Foydalanuvchi bilan bog'liq barcha faol chatlarni yopish"""
     async with AsyncSessionLocal() as session:
         await session.execute(
             update(Chat)
@@ -439,17 +486,12 @@ async def end_chat(user_id: int):
         )
         await session.commit()
 
-
 # ============================================================
 # PAYMENT
 # ============================================================
 
-async def create_payment_request(
-    user_id: int,
-    plan: str,
-    photo_file_id: str,
-    message_id: int
-) -> int:
+async def create_payment_request(user_id: int, plan: str,
+                                  photo_file_id: str, message_id: int) -> int:
     async with AsyncSessionLocal() as session:
         req = PaymentRequest(
             user_id=user_id,
@@ -463,7 +505,6 @@ async def create_payment_request(
         await session.refresh(req)
         return req.id
 
-
 async def get_payment_request(request_id: int) -> Optional[dict]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -473,13 +514,12 @@ async def get_payment_request(request_id: int) -> Optional[dict]:
         if not req:
             return None
         return {
-            "id": req.id,
-            "user_id": req.user_id,
-            "plan": req.plan,
+            "id":            req.id,
+            "user_id":       req.user_id,
+            "plan":          req.plan,
             "photo_file_id": req.photo_file_id,
-            "status": req.status,
+            "status":        req.status,
         }
-
 
 async def update_payment_status(request_id: int, status: str, admin_message_id: int = None):
     async with AsyncSessionLocal() as session:
