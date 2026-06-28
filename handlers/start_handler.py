@@ -1,7 +1,5 @@
 """
 start_handler.py — /start komandasi + referral havolalarni qayta ishlash
-
-Yangilik: /start ref_12345678 → referral tizimi ishga tushadi
 """
 
 import logging
@@ -11,14 +9,14 @@ from aiogram.filters import CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
 
 import database as db
-from keyboards import start_keyboard, main_menu_keyboard
+from keyboards import kb_check_subscription, kb_main_menu
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, command: CommandObject, state: FSMContext, bot=None):
+async def cmd_start(message: Message, command: CommandObject, state: FSMContext):
     user_id   = message.from_user.id
     username  = message.from_user.username
     full_name = message.from_user.full_name
@@ -29,7 +27,7 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         try:
             referrer_id = int(command.args.split("_")[1])
             if referrer_id == user_id:
-                referrer_id = None  # O'zini chaqira olmaydi
+                referrer_id = None
         except (ValueError, IndexError):
             referrer_id = None
 
@@ -43,10 +41,10 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
 
     # Ro'yxatdan o'tganmi?
     if await db.user_exists(user_id):
+        is_prem = await db.is_premium(user_id)
         await message.answer(
-            f"👋 <b>Xush kelibsiz, {full_name}!</b>\n\n"
-            f"Nima qilmoqchisiz?",
-            reply_markup=main_menu_keyboard(),
+            f"👋 <b>Xush kelibsiz, {full_name}!</b>\n\nNima qilmoqchisiz?",
+            reply_markup=kb_main_menu(is_premium_user=is_prem),
             parse_mode="HTML"
         )
         return
@@ -59,12 +57,11 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
     await message.answer(
         f"👋 <b>Salom, {full_name}!</b>\n\n"
         f"Bu anonim tanishuv botiga xush kelibsiz!{ref_text}\n\n"
-        f"Boshlash uchun ro'yxatdan o'ting 👇",
-        reply_markup=start_keyboard(),
+        f"Boshlash uchun avval kanalimizga obuna bo'ling 👇",
+        reply_markup=kb_check_subscription(),
         parse_mode="HTML"
     )
 
-    # Referral qayta ishlash (ro'yxatdan o'tgandan keyin bo'ladi,
-    # shuning uchun bu yerda faqat saqlaymiz — complete_registration dan keyin chaqiriladi)
+    # Referral'ni state'ga saqlash (ro'yxatdan o'tgandan keyin ishlatiladi)
     if referrer_id:
         await state.update_data(pending_referrer_id=referrer_id)
