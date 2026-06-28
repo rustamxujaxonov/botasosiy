@@ -136,7 +136,12 @@ async def reg_region(callback: CallbackQuery, state: FSMContext):
         f"📍 Viloyat: <b>{region}</b>\n\n"
         f"✅ Endi botdan foydalanishingiz mumkin!"
     )
-
+    # complete_registration dan keyin:
+state_data = await state.get_data()
+referrer_id = state_data.get("pending_referrer_id")
+if referrer_id:
+    from handlers.referral_handler import confirm_referral_after_registration
+    await confirm_referral_after_registration(user_id, referrer_id, bot)
     from handlers.menu_handler import send_main_menu
     await send_main_menu(callback.bot, callback.message.chat.id, callback.from_user.id)
     await callback.answer()
