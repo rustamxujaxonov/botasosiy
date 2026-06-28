@@ -1,95 +1,70 @@
 """
-start_handler.py
-Tuzatishlar:
-- proceed_after_subscription'da message/bot to'g'ri uzatiladi
-- callback'dan kelganda message.chat.id ishlatiladi
+start_handler.py — /start komandasi + referral havolalarni qayta ishlash
+
+Yangilik: /start ref_12345678 → referral tizimi ishga tushadi
 """
 
 import logging
-from aiogram import Router, Bot, F
-from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery
+from aiogram import Router, F
+from aiogram.types import Message
+from aiogram.filters import CommandStart, CommandObject
+from aiogram.fsm.context import FSMContext
 
-from config import CHANNEL_ID
-from database import create_or_update_user, user_exists
-from keyboards import kb_check_subscription
+import database as db
+from keyboards import start_keyboard, main_menu_keyboard
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
-async def check_subscription(bot: Bot, user_id: int) -> bool:
-    """Foydalanuvchi kanalga obuna bo'lganini tekshirish"""
-    try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return member.status not in ("left", "kicked", "banned")
-    except Exception as e:
-        logger.error(f"Obuna tekshirishda xato: {e}")
-        # Xato bo'lsa — o'tkazib yuboramiz (bot kanalda admin emas bo'lishi mumkin)
-        return True
-
-
 @router.message(CommandStart())
-async def cmd_start(message: Message, bot: Bot):
-    user = message.from_user
-    await create_or_update_user(
-        user_id=user.id,
-        username=user.username,
-        full_name=user.full_name
+async def cmd_start(message: Message, command: CommandObject, state: FSMContext, bot=None):
+    user_id   = message.from_user.id
+    username  = message.from_user.username
+    full_name = message.from_user.full_name
+
+    # Referral parametrini tekshirish: /start ref_12345678
+    referrer_id = None
+    if command.args and command.args.startswith("ref_"):
+        try:
+            referrer_id = int(command.args.split("_")[1])
+            if referrer_id == user_id:
+                referrer_id = None  # O'zini chaqira olmaydi
+        except (ValueError, IndexError):
+            referrer_id = None
+
+    # Foydalanuvchini yaratish/yangilash
+    await db.create_or_update_user(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        referrer_id=referrer_id
     )
 
-    is_subscribed = await check_subscription(bot, user.id)
-
-    if not is_subscribed:
+    # Ro'yxatdan o'tganmi?
+    if await db.user_exists(user_id):
         await message.answer(
-            "👋 <b>Xush kelibsiz!</b>\n\n"
-            "🔐 Botdan foydalanish uchun avval bizning kanalga obuna bo'lishingiz kerak.\n\n"
-            "📢 Obuna bo'lgach, <b>«✅ Obunani tekshirish»</b> tugmasini bosing."
-        )
-        await message.answer(
-            "👇 Obuna bo'lish uchun:",
-            reply_markup=kb_check_subscription()
+            f"👋 <b>Xush kelibsiz, {full_name}!</b>\n\n"
+            f"Nima qilmoqchisiz?",
+            reply_markup=main_menu_keyboard(),
+            parse_mode="HTML"
         )
         return
 
-    await _after_subscription(bot, message.chat.id, user.id)
+    # Yangi foydalanuvchi
+    ref_text = ""
+    if referrer_id:
+        ref_text = f"\n\n🎁 <i>Siz do'stingiz taklifi bilan keldingiz!</i>"
 
+    await message.answer(
+        f"👋 <b>Salom, {full_name}!</b>\n\n"
+        f"Bu anonim tanishuv botiga xush kelibsiz!{ref_text}\n\n"
+        f"Boshlash uchun ro'yxatdan o'ting 👇",
+        reply_markup=start_keyboard(),
+        parse_mode="HTML"
+    )
 
-@router.callback_query(F.data == "check_sub")
-async def check_sub_callback(callback: CallbackQuery, bot: Bot):
-    is_subscribed = await check_subscription(bot, callback.from_user.id)
-
-    if not is_subscribed:
-        await callback.answer(
-            "❌ Siz hali kanalga obuna bo'lmadingiz!",
-            show_alert=True
-        )
-        return
-
-    # Tugma xabarini o'chirish
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
-    await _after_subscription(bot, callback.message.chat.id, callback.from_user.id)
-    await callback.answer()
-
-
-async def _after_subscription(bot: Bot, chat_id: int, user_id: int):
-    """Obuna tasdiqlanganidan keyin keyingi qadam"""
-    is_registered = await user_exists(user_id)
-
-    if is_registered:
-        from handlers.menu_handler import send_main_menu
-        await send_main_menu(bot, chat_id, user_id)
-    else:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "📋 <b>Ro'yxatdan o'tish</b>\n\n"
-                "Bu ma'lumotlar anonim saqlanadi va boshqalarga ko'rsatilmaydi.\n\n"
-                "👤 Avval jinsingizni tanlang:"
-            ),
-            reply_markup=__import__('keyboards').kb_gender()
-        )
+    # Referral qayta ishlash (ro'yxatdan o'tgandan keyin bo'ladi,
+    # shuning uchun bu yerda faqat saqlaymiz — complete_registration dan keyin chaqiriladi)
+    if referrer_id:
+        await state.update_data(pending_referrer_id=referrer_id)
