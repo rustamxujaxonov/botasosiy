@@ -1,9 +1,5 @@
 """
 bot.py — Asosiy ishga tushirish fayli
-Tuzatishlar:
-- Railway restart'da FSM yo'qolmasligi uchun RedisStorage (REDIS_URL bo'lsa)
-- Graceful shutdown
-- Yaxshi error logging
 """
 
 import asyncio
@@ -14,10 +10,10 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from handlers import referral_handler
-dp.include_router(referral_handler.router)
+
 from config import BOT_TOKEN
 from database import init_db
+
 from handlers import (
     start_handler,
     registration_handler,
@@ -27,6 +23,7 @@ from handlers import (
     profile_handler,
     admin_handler,
     chat_handler,
+    referral_handler,   # ← yangi qo'shildi
 )
 
 logging.basicConfig(
@@ -37,10 +34,6 @@ logger = logging.getLogger(__name__)
 
 
 def get_storage():
-    """
-    REDIS_URL environment variable bo'lsa — RedisStorage ishlatiladi.
-    Aks holda MemoryStorage (restart'da FSM yo'qoladi, lekin ishlaydi).
-    """
     redis_url = os.getenv("REDIS_URL")
     if redis_url:
         try:
@@ -58,17 +51,16 @@ def get_storage():
 
 
 async def main():
-    # DB ni ishga tushirish
     await init_db()
 
-    # Bot va Dispatcher
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
+
     dp = Dispatcher(storage=get_storage())
 
-    # Router'larni tartib bilan qo'shish (muhim: admin birinchi)
+    # Router'larni tartib bilan qo'shish (admin birinchi)
     dp.include_router(admin_handler.router)
     dp.include_router(start_handler.router)
     dp.include_router(registration_handler.router)
@@ -76,6 +68,7 @@ async def main():
     dp.include_router(profile_handler.router)
     dp.include_router(search_handler.router)
     dp.include_router(chat_handler.router)
+    dp.include_router(referral_handler.router)   # ← to'g'ri joy: dp dan KEYIN
     dp.include_router(menu_handler.router)
 
     logger.info("🚀 Bot ishga tushdi!")
@@ -84,7 +77,7 @@ async def main():
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
-            drop_pending_updates=True  # Restart paytidagi eski xabarlarni o'tkazib yuborish
+            drop_pending_updates=True
         )
     finally:
         await bot.session.close()
