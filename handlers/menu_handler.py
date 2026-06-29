@@ -1,16 +1,19 @@
 """
-menu_handler.py
+menu_handler.py — Tuzatilgan
 
 Tuzatishlar:
-- send_main_menu(bot, chat_id, user_id) — bot obyekti bilan ishlaydi
-- show_main_menu(message, user_id) — eski interfeysni saqlaydi
-- ✅ YANGI: qidiruv knopkalari handlerlari qo'shildi
+- ✅ "🔍 Muloqotchi qidirish" handler qo'shildi
+- ✅ "👧 Qiz qidirish" handler qo'shildi (premium)
+- ✅ "👦 Yigit qidirish" handler qo'shildi (premium)
+- ✅ "👧 Qiz qidirish ⭐" handler qo'shildi (premium taklif)
+- ✅ "👦 Yigit qidirish ⭐" handler qo'shildi (premium taklif)
 """
 
 import logging
 from aiogram import Router, Bot, F
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
+
 from database import get_user, is_premium
 from keyboards import kb_main_menu, kb_premium_plans
 from handlers.search_handler import start_search
@@ -19,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
+
+# ============================================================
+# YORDAMCHI FUNKSIYALAR
+# ============================================================
 
 async def send_main_menu(bot: Bot, chat_id: int, user_id: int):
     """Bot + chat_id bilan asosiy menyuni yuborish (callback'lardan chaqirish uchun)"""
@@ -52,30 +59,34 @@ async def show_main_menu(message: Message, user_id: int):
     await send_main_menu(message.bot, message.chat.id, user_id)
 
 
+# ============================================================
+# ASOSIY MENYU
+# ============================================================
+
 @router.message(F.text == "🏠 Asosiy menyu")
 async def main_menu_handler(message: Message):
     await show_main_menu(message, message.from_user.id)
 
 
 # ============================================================
-# ✅ QIDIRUV KNOPKALARI — YANGI QO'SHILDI
+# QIDIRUV KNOPKALARI
 # ============================================================
 
 @router.message(F.text == "🔍 Muloqotchi qidirish")
 async def menu_search_any(message: Message, state: FSMContext):
-    """Istalgan jinsdan muloqotchi qidirish"""
+    """Istalgan jinsdan muloqotchi qidirish — barchaga ochiq"""
     await start_search(message, state, "any")
 
 
 @router.message(F.text == "👧 Qiz qidirish")
 async def menu_search_female(message: Message, state: FSMContext):
-    """Qiz qidirish — faqat premium (⭐ belgisi YO'Q = premium user)"""
+    """Qiz qidirish — premium foydalanuvchi (⭐ belgisiz)"""
     await start_search(message, state, "female")
 
 
 @router.message(F.text == "👦 Yigit qidirish")
 async def menu_search_male(message: Message, state: FSMContext):
-    """Yigit qidirish — faqat premium (⭐ belgisi YO'Q = premium user)"""
+    """Yigit qidirish — premium foydalanuvchi (⭐ belgisiz)"""
     await start_search(message, state, "male")
 
 
@@ -85,7 +96,7 @@ async def menu_search_female_locked(message: Message):
     await message.answer(
         "⭐ <b>Bu funksiya faqat premium foydalanuvchilar uchun!</b>\n\n"
         "Jins bo'yicha qidiruv — premium imkoniyat.\n"
-        "Quyidan premium sotib oling:",
+        "Quyidan premium sotib oling 👇",
         reply_markup=kb_premium_plans(),
         parse_mode="HTML"
     )
@@ -97,7 +108,7 @@ async def menu_search_male_locked(message: Message):
     await message.answer(
         "⭐ <b>Bu funksiya faqat premium foydalanuvchilar uchun!</b>\n\n"
         "Jins bo'yicha qidiruv — premium imkoniyat.\n"
-        "Quyidan premium sotib oling:",
+        "Quyidan premium sotib oling 👇",
         reply_markup=kb_premium_plans(),
         parse_mode="HTML"
     )
