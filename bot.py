@@ -1,5 +1,5 @@
 """
-bot.py — Asosiy ishga tushirish fayli
+bot.py — Referral handler qo'shilgan
 """
 
 import asyncio
@@ -13,7 +13,6 @@ from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN
 from database import init_db
-
 from handlers import (
     start_handler,
     registration_handler,
@@ -23,7 +22,7 @@ from handlers import (
     profile_handler,
     admin_handler,
     chat_handler,
-    referral_handler,   # ← yangi qo'shildi
+    referral_handler,       # ← YANGI
 )
 
 logging.basicConfig(
@@ -49,29 +48,27 @@ def get_storage():
         logger.info("ℹ️ REDIS_URL yo'q — MemoryStorage ishlatilmoqda")
     return MemoryStorage()
 
+
 async def main():
     await init_db()
-    
+
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
-    
-    # ✅ BU QATORNI QO'SHING — eski sessiyani tozalash
+
     await bot.delete_webhook(drop_pending_updates=True)
-    
+
     dp = Dispatcher(storage=get_storage())
-    # ... qolgan kod
-    # Router'larni tartib bilan qo'shish (admin birinchi)
+
     dp.include_router(admin_handler.router)
     dp.include_router(start_handler.router)
     dp.include_router(registration_handler.router)
     dp.include_router(premium_handler.router)
     dp.include_router(profile_handler.router)
     dp.include_router(search_handler.router)
-    dp.include_router(referral_handler.router)
-    dp.include_router(referral_handler.router)# ← to'g'ri joy: dp dan KEYIN
-    dp.include_router(menu_handler.router)
+    dp.include_router(referral_handler.router)   # ← menu_handler DAN OLDIN
+    dp.include_router(menu_handler.router)        # ← chat_handler DAN OLDIN
     dp.include_router(chat_handler.router)
 
     logger.info("🚀 Bot ishga tushdi!")
@@ -80,7 +77,7 @@ async def main():
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
-            drop_pending_updates=True
+            drop_pending_updates=True,
         )
     finally:
         await bot.session.close()
