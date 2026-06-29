@@ -27,26 +27,47 @@ router = Router()
 # MAJBURIY OBUNA FUNKSIYALARI (CONFIG ASOSIDA)
 # ============================================================
 
-async def check_user_subscription(bot: Bot, user_id: int) -> bool:
-    """Foydalanuvchi config'dagi majburiy kanalga a'zo bo'lganini tekshiradi"""
+@router.callback_query(F.data == "check_subscription")
+async def cb_check_subscription(callback: CallbackQuery, state: FSMContext):
+    """Foydalanuvchi obunani tasdiqlash tugmasini bosganda ishlaydi"""
+    user_id = callback.from_user.id
+    
+    # 1. Avval obunani tekshiramiz
+    is_subbed = await check_user_subscription(callback.bot, user_id)
+    
+    if not is_subbed:
+        # Agar a'zo bo'lmagan bo'lsa, alert chiqarib darhol funksiyani to'xtatamiz
+        await callback.answer("❌ Siz hali kanalga a'zo bo'lmadingiz!", show_alert=True)
+        return
+
+    # 2. Agar a'zo bo'lgan bo'lsa, Telegram "loading" aylanishini to'xtatish uchun javob beramiz
+    await callback.answer("🎉 Obuna tasdiqlandi!", show_alert=False)
+
+    # 3. Eski xabarni o'chirishga harakat qilamiz
     try:
-        # 🛠 BUG FIX: Agar CHANNEL_ID raqamli bo'lsa (masalan -100...), uni int ga o'giramiz.
-        # Chunki .env fayldan ma'lumot doim string (matn) bo'lib keladi.
-        target_chat = CHANNEL_ID
-        if str(target_chat).startswith("-") or str(target_chat).isdigit():
-            target_chat = int(target_chat)
-            
-        member = await bot.get_chat_member(chat_id=target_chat, user_id=user_id)
-        
-        # Foydalanuvchi kanalda bo'lsa, statusi: 'member', 'administrator' yoki 'creator' bo'ladi
-        if member.status in ["left", "kicked"]:
-            return False
-        return True
-        
+        await callback.message.delete()
     except Exception as e:
-        logger.error(f"Kanal tekshirishda xatolik ({CHANNEL_ID}): {e}")
-        # Agar bot kanalda admin bo'lmasa yoki kanal topilmasa tizim doim False qaytaradi
-        return False
+        logger.error(f"Xabarni o'chirishda xatolik: {e}")
+
+    # 4. 🛑 ENG MUHIM JOYI: send_main_menu chaqirilishidan oldin bazani shu yerda tekshiramiz!
+    user = await get_user(user_id)
+    
+    if not user:
+        # 🟢 YANGI FOYDALANUVCHI BO'LSA -> RO'YXATDAN O'TISHGA (REGISTRATION) YUBORISH
+        from handlers.registration_handler import RegState
+        from keyboards import kb_gender
+        
+        await state.set_state(RegState.gender)
+        await callback.message.answer(
+            "🤖 Botdan foydalanish uchun ro'yxatdan o'ting.\n\n"
+            "⚠️ Diqqat: Haqiqiy ismingizni yozishingiz shart emas.\n"
+            "🚻 <b>Jinsingizni tanlang:</b>", 
+            reply_markup=kb_gender(),
+            parse_mode="HTML"
+        )
+    else:
+        # 🔵 ESKI FOYDALANUVCHI BO'LSA -> ASOSIY MENYUGA
+        await send_main_menu(callback.bot, callback.message.chat.id, user_id)
 
 
 async def send_sub_keyboards(message: Message):
