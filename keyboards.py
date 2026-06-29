@@ -67,7 +67,23 @@ def kb_main_menu(is_premium_user: bool = False):
     keyboard.append([KeyboardButton(text="👤 Profil sozlamalari")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
-
+def kb_main_menu(is_premium_user: bool = False):
+    keyboard = [
+        [KeyboardButton(text="🔍 Muloqotchi qidirish")],
+    ]
+    if is_premium_user:
+        keyboard.append([
+            KeyboardButton(text="👧 Qiz qidirish"),
+            KeyboardButton(text="👦 Yigit qidirish"),
+        ])
+    else:
+        keyboard.append([
+            KeyboardButton(text="👧 Qiz qidirish ⭐"),
+            KeyboardButton(text="👦 Yigit qidirish ⭐"),
+        ])
+    keyboard.append([KeyboardButton(text="👤 Profil sozlamalari")])
+    keyboard.append([KeyboardButton(text="👥 Referral")])  # ← QO'SHING
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 # ============================================================
 # PREMIUM PLANS
 # ============================================================
