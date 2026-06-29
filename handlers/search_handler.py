@@ -1,19 +1,16 @@
 """
-search_handler.py — Yaxshilangan qidiruv tizimi
+search_handler.py — Tuzatilgan qidiruv tizimi
 
-Muammo (oldin):
-  - Vaqt tugasa "topilmadi, keyinroq urinib ko'ring" deb TO'XTATIB qo'yardi
-
-Yechim (endi):
-  - Foydalanuvchi o'zi to'xtatgunicha qidiraveradi
-  - Har 30 sekundda status xabari yangilanadi
-  - Navbatdagi odamlar sonini ko'rsatadi
+Tuzatishlar:
+- get_queue_size() chaqiruvi olib tashlandi (database.py da yo'q edi)
+- start_search() to'g'ri ishlaydi
+- Faqat to'xtatish handleri bu yerda
 """
 
 import asyncio
 import logging
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -21,11 +18,11 @@ import database as db
 from keyboards import kb_stop_search, kb_main_menu
 
 logger = logging.getLogger(__name__)
+
 router = Router()
 
-CHECK_INTERVAL  = 5    # Har 5 sekundda match qidiriladi
-STATUS_INTERVAL = 30   # Har 30 sekundda xabar yangilanadi
-MAX_WAIT_NOTIFY = 30   # 30 daqiqada bir marta eslatma (lekin to'xtatilmaydi)
+CHECK_INTERVAL = 5    # Har 5 sekundda match qidiriladi
+STATUS_INTERVAL = 30  # Har 30 sekundda xabar yangilanadi
 
 
 class SearchState(StatesGroup):
@@ -33,44 +30,45 @@ class SearchState(StatesGroup):
 
 
 # ============================================================
-# QIDIRUV BOSHLASH (mavjud search handlerga mos)
+# QIDIRUV BOSHLASH
 # ============================================================
 
 async def start_search(message: Message, state: FSMContext, search_type: str):
     """
-    Bu funksiyani menu_handler yoki boshqa handlerdan chaqiring:
-        await start_search(message, state, "any")   # istalgan
-        await start_search(message, state, "male")  # erkak
-        await start_search(message, state, "female")# ayol
+    menu_handler dan chaqiriladi:
+        await start_search(message, state, "any")
+        await start_search(message, state, "male")
+        await start_search(message, state, "female")
     """
     user_id = message.from_user.id
 
+    # Hozir chatdami?
     if await db.is_in_chat(user_id):
         await message.answer("❗ Siz hozir chat ichida ekansiz. Avval chatni yakunlang.")
         return
 
+    # Ro'yxatdan o'tganmi?
     user = await db.get_user(user_id)
     if not user or not user["registered"]:
-        await message.answer("❗ Avval ro'yxatdan o'ting.")
+        await message.answer("❗ Avval ro'yxatdan o'ting. /start bosing.")
         return
 
     my_gender = user["gender"]
+
+    # Navbatga qo'shish
     await db.add_to_queue(user_id, my_gender, search_type)
     await state.set_state(SearchState.searching)
     await state.update_data(search_type=search_type, my_gender=my_gender)
 
     search_type_text = {
-        "any":    "istalgan",
-        "male":   "erkak",
+        "any": "istalgan",
+        "male": "erkak",
         "female": "ayol"
     }.get(search_type, "istalgan")
 
-    queue_size = await db.get_queue_size()
-
     sent = await message.answer(
         f"🔍 <b>Muloqotchi qidirilmoqda...</b>\n\n"
-        f"Qidiruv turi: <b>{search_type_text}</b>\n"
-        f"Navbatda: <b>{queue_size}</b> ta foydalanuvchi\n\n"
+        f"Qidiruv turi: <b>{search_type_text}</b>\n\n"
         f"⏳ Muloqotchi topilguncha kuting...\n"
         f"(O'zingiz to'xtatmasangiz qidiraveradi)",
         reply_markup=kb_stop_search(),
@@ -83,7 +81,7 @@ async def start_search(message: Message, state: FSMContext, search_type: str):
 
 
 # ============================================================
-# QIDIRUV LOOPI — to'xtatmaydi, faqat foydalanuvchi bekor qiladi
+# QIDIRUV LOOPI
 # ============================================================
 
 async def _search_loop(
@@ -94,13 +92,13 @@ async def _search_loop(
     state: FSMContext,
     status_msg_id: int
 ):
-    elapsed        = 0
+    elapsed = 0
     status_elapsed = 0
-    bot            = message.bot
+    bot = message.bot
 
     while True:
         await asyncio.sleep(CHECK_INTERVAL)
-        elapsed        += CHECK_INTERVAL
+        elapsed += CHECK_INTERVAL
         status_elapsed += CHECK_INTERVAL
 
         # Bekor qilinganmi?
@@ -122,10 +120,9 @@ async def _search_loop(
         # Har STATUS_INTERVAL sekundda xabar yangilash
         if status_elapsed >= STATUS_INTERVAL:
             status_elapsed = 0
-            minutes  = elapsed // 60
-            seconds  = elapsed % 60
+            minutes = elapsed // 60
+            seconds = elapsed % 60
             wait_txt = f"{minutes} daq {seconds} son" if minutes > 0 else f"{seconds} son"
-            queue_size = await db.get_queue_size()
 
             try:
                 await bot.edit_message_text(
@@ -133,26 +130,9 @@ async def _search_loop(
                     message_id=status_msg_id,
                     text=(
                         f"🔍 <b>Muloqotchi qidirilmoqda...</b>\n\n"
-                        f"⏱ Kutish vaqti: <b>{wait_txt}</b>\n"
-                        f"👥 Navbatda: <b>{queue_size}</b> ta foydalanuvchi\n\n"
+                        f"⏱ Kutish vaqti: <b>{wait_txt}</b>\n\n"
                         f"🔄 Qidiruv davom etmoqda...\n"
                         f"To'xtatish uchun quyidagi tugmani bosing."
-                    ),
-                    reply_markup=kb_stop_search(),
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-
-        # Har MAX_WAIT_NOTIFY daqiqada eslatma (lekin TO'XTATILMAYDI)
-        if elapsed > 0 and elapsed % (MAX_WAIT_NOTIFY * 60) == 0:
-            try:
-                await bot.send_message(
-                    chat_id=message.chat.id,
-                    text=(
-                        f"⏰ <b>{MAX_WAIT_NOTIFY} daqiqa bo'ldi, hali ham qidiryapman.</b>\n\n"
-                        f"Navbatda kam odam bor, lekin qidiruv davom etmoqda...\n"
-                        f"Bekor qilmoqchi bo'lsangiz tugmani bosing."
                     ),
                     reply_markup=kb_stop_search(),
                     parse_mode="HTML"
@@ -166,7 +146,7 @@ async def _search_loop(
 # ============================================================
 
 async def _on_match_found(bot, user_id: int, partner_id: int,
-                           user_chat_id: int, status_msg_id: int):
+                          user_chat_id: int, status_msg_id: int):
     try:
         await bot.edit_message_text(
             chat_id=user_chat_id,
