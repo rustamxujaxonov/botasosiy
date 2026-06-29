@@ -1,8 +1,5 @@
 """
 database.py — SQLAlchemy 2.x async ORM
-Yangiliklar:
-- Referral tizimi qo'shildi (5 ta do'st = 1 kunlik bepul premium)
-- init_db avtomatik migration qiladi (mavjud bazaga ustun qo'shadi)
 """
 
 import logging
@@ -99,23 +96,22 @@ class PaymentRequest(Base):
     status           = Column(String(20), default="pending")
     created_at       = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at       = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
 class Referral(Base):
     __tablename__ = "referrals"
+
     id         = Column(Integer, primary_key=True, autoincrement=True)
     inviter_id = Column(BigInteger, nullable=False, index=True)
     invitee_id = Column(BigInteger, nullable=False, unique=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 # ============================================================
-# DB INIT — avtomatik migration bilan
+# DB INIT
 # ============================================================
 
 async def init_db():
     async with engine.begin() as conn:
-        # Jadvallarni yaratish (mavjud bo'lsa o'zgartirmaydi)
         await conn.run_sync(Base.metadata.create_all)
-
-        # Referral ustunlarini qo'shish (mavjud bazalarga)
         migrations = [
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id BIGINT",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_count INTEGER DEFAULT 0",
@@ -126,7 +122,6 @@ async def init_db():
                 await conn.execute(text(sql))
             except Exception as e:
                 logger.warning(f"Migration: {e}")
-
     logger.info("✅ Ma'lumotlar bazasi tayyor!")
 
 # ============================================================
@@ -138,7 +133,6 @@ async def create_or_update_user(user_id: int, username: str = None,
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
-
         if user:
             if username is not None:
                 user.username = username
@@ -156,7 +150,6 @@ async def create_or_update_user(user_id: int, username: str = None,
                 ref_premium_given=False,
             )
             session.add(user)
-
         await session.commit()
 
 async def user_exists(user_id: int) -> bool:
@@ -212,86 +205,6 @@ async def update_profile(user_id: int, **kwargs):
         await session.commit()
 
 # ============================================================
-# REFERRAL TIZIMI
-# ============================================================
-
-async def process_referral(new_user_id: int, referrer_id: int) -> bool:
-    """
-    Yangi foydalanuvchi ro'yxatdan o'tganda referrer hisobini oshiradi.
-    Har 5 ta do'stda 1 kunlik bepul premium beradi.
-    Returns True — agar premium berilgan bo'lsa.
-    """
-    if new_user_id == referrer_id:
-        return False
-
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(User).where(User.id == referrer_id))
-        referrer = result.scalar_one_or_none()
-        if not referrer or not referrer.registered:
-            return False
-
-        # Yangi foydalanuvchining referrer_id sini saqlash
-        result2 = await session.execute(select(User).where(User.id == new_user_id))
-        new_user = result2.scalar_one_or_none()
-        if new_user and new_user.referrer_id is None:
-            new_user.referrer_id = referrer_id
-
-        referrer.ref_count = (referrer.ref_count or 0) + 1
-        premium_given = False
-
-        # Har 5 ta do'stda premium
-        if referrer.ref_count % 5 == 0:
-            existing = await session.execute(
-                select(Premium).where(
-                    Premium.user_id == referrer_id,
-                    Premium.expires_at > datetime.now(timezone.utc)
-                ).order_by(Premium.expires_at.desc())
-            )
-            existing_prem = existing.scalar_one_or_none()
-            base = existing_prem.expires_at if existing_prem else datetime.now(timezone.utc)
-            new_expires = base + timedelta(days=1)
-
-            session.add(Premium(
-                user_id=referrer_id,
-                plan="referral_1day",
-                granted_by=None,
-                expires_at=new_expires,
-            ))
-            premium_given = True
-            logger.info(f"🎁 Referral premium: user {referrer_id} ga 1 kunlik premium")
-
-        await session.commit()
-        return premium_given
-
-async def get_referral_stats(user_id: int) -> dict:
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
-        if not user:
-            return {"ref_count": 0, "next_premium_in": 5, "total_premiums_earned": 0}
-        count = user.ref_count or 0
-        next_in = 5 - (count % 5)
-        if next_in == 5 and count == 0:
-            next_in = 5
-        return {
-            "ref_count":            count,
-            "next_premium_in":      next_in,
-            "total_premiums_earned": count // 5,
-        }
-
-async def get_referral_link_text(user_id: int, bot_username: str) -> str:
-    stats = await get_referral_stats(user_id)
-    link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-    return (
-        f"🔗 <b>Sizning referral havolangiz:</b>\n"
-        f"<code>{link}</code>\n\n"
-        f"👥 <b>Taklif qilganlar:</b> {stats['ref_count']} ta\n"
-        f"🎁 <b>Keyingi bepul premiumgacha:</b> {stats['next_premium_in']} ta do'st\n"
-        f"⭐ <b>Jami olgan premiumlar:</b> {stats['total_premiums_earned']} ta\n\n"
-        f"💡 Har <b>5 ta do'st</b> taklif qilsangiz — <b>1 kunlik bepul premium</b> olasiz!"
-    )
-
-# ============================================================
 # PREMIUM
 # ============================================================
 
@@ -333,6 +246,74 @@ async def grant_premium(user_id: int, plan: str, days: int, admin_id: int):
             user_id=user_id, plan=plan, granted_by=admin_id, expires_at=new_expires,
         ))
         await session.commit()
+
+# ============================================================
+# REFERRAL
+# ============================================================
+
+async def add_referral(inviter_id: int, invitee_id: int) -> bool:
+    if inviter_id == invitee_id:
+        return False
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Referral).where(Referral.invitee_id == invitee_id)
+        )
+        if result.scalar_one_or_none():
+            return False
+        session.add(Referral(inviter_id=inviter_id, invitee_id=invitee_id))
+        await session.commit()
+        return True
+
+async def get_referral_count(user_id: int) -> int:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(func.count(Referral.id)).where(Referral.inviter_id == user_id)
+        )
+        return result.scalar() or 0
+
+async def get_referral_stats(user_id: int) -> dict:
+    count = await get_referral_count(user_id)
+    next_in = 5 - (count % 5) if count % 5 != 0 else 5
+    return {
+        "ref_count":             count,
+        "next_premium_in":       next_in,
+        "total_premiums_earned": count // 5,
+    }
+
+async def check_and_grant_referral_premium(user_id: int, bot) -> bool:
+    count = await get_referral_count(user_id)
+    if count == 0 or count % 5 != 0:
+        return False
+
+    milestone = count // 5
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Premium).where(
+                Premium.user_id == user_id,
+                Premium.plan == f"referral_{milestone}"
+            )
+        )
+        if result.scalar_one_or_none():
+            return False
+
+    await grant_premium(user_id=user_id, plan=f"referral_{milestone}", days=1, admin_id=0)
+
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🎉 <b>Tabriklaymiz!</b>\n\n"
+                f"Siz <b>{count} ta</b> do'stni taklif qildingiz!\n"
+                "🎁 <b>1 kunlik premium</b> hisobingizga qo'shildi!\n\n"
+                "Endi jins bo'yicha qidirishdan foydalana olasiz 👍"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    return True
 
 # ============================================================
 # SEARCH QUEUE
@@ -500,90 +481,4 @@ async def update_payment_status(request_id: int, status: str, admin_message_id: 
         await session.execute(
             update(PaymentRequest).where(PaymentRequest.id == request_id).values(**values)
         )
-        # ============================================================
-# database.py GA QO'SHISH KERAK BO'LGAN KOD
-# ============================================================
-#
-# 1-QADAM: Modellar qismiga (User, Premium, SearchQueue, Chat dan KEYIN)
-#          Referral modelini qo'shing:
-#
-# class Referral(Base):
-#     __tablename__ = "referrals"
-#     id         = Column(Integer, primary_key=True, autoincrement=True)
-#     inviter_id = Column(BigInteger, nullable=False, index=True)
-#     invitee_id = Column(BigInteger, nullable=False, unique=True)
-#     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-#
-#
-# 2-QADAM: Fayl oxiriga (# PAYMENT bo'limidan keyin) bu funksiyalarni qo'shing:
-# ============================================================
-
-
-async def add_referral(inviter_id: int, invitee_id: int) -> bool:
-    """True = muvaffaqiyatli, False = allaqachon bor yoki o'zi-o'zi"""
-    if inviter_id == invitee_id:
-        return False
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Referral).where(Referral.invitee_id == invitee_id)
-        )
-        if result.scalar_one_or_none():
-            return False
-        session.add(Referral(inviter_id=inviter_id, invitee_id=invitee_id))
-        await session.commit()
-        return True
-
-
-async def get_referral_count(user_id: int) -> int:
-    """Foydalanuvchi nechta referral to'plaganini qaytaradi"""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Referral).where(Referral.inviter_id == user_id)
-        )
-        return len(result.scalars().all())
-
-
-async def check_and_grant_referral_premium(user_id: int, bot) -> bool:
-    """
-    Har 5 referralda 1 kunlik premium beradi.
-    True = premium berildi, False = hali yetmadi yoki allaqachon berilgan.
-    """
-    count = await get_referral_count(user_id)
-    if count == 0 or count % 5 != 0:
-        return False
-
-    milestone = count // 5  # nechi marta berilishi kerak
-
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Premium).where(
-                Premium.user_id == user_id,
-                Premium.plan == f"referral_{milestone}"
-            )
-        )
-        if result.scalar_one_or_none():
-            return False  # bu milestone uchun allaqachon berilgan
-
-    await grant_premium(
-        user_id=user_id,
-        plan=f"referral_{milestone}",
-        days=1,
-        admin_id=0
-    )
-
-    try:
-        await bot.send_message(
-            chat_id=user_id,
-            text=(
-                "🎉 <b>Tabriklaymiz!</b>\n\n"
-                f"Siz <b>{count} ta</b> do'stni taklif qildingiz!\n"
-                "🎁 <b>1 kunlik premium</b> hisobingizga qo'shildi!\n\n"
-                "Endi jins bo'yicha qidirishdan foydalana olasiz 👍"
-            ),
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-
-    return True
         await session.commit()
