@@ -49,17 +49,19 @@ def get_storage():
         logger.info("ℹ️ REDIS_URL yo'q — MemoryStorage ishlatilmoqda")
     return MemoryStorage()
 
-
 async def main():
     await init_db()
-
+    
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
-
+    
+    # ✅ BU QATORNI QO'SHING — eski sessiyani tozalash
+    await bot.delete_webhook(drop_pending_updates=True)
+    
     dp = Dispatcher(storage=get_storage())
-
+    # ... qolgan kod
     # Router'larni tartib bilan qo'shish (admin birinchi)
     dp.include_router(admin_handler.router)
     dp.include_router(start_handler.router)
