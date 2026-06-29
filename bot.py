@@ -69,9 +69,9 @@ async def main():
     dp.include_router(premium_handler.router)
     dp.include_router(profile_handler.router)
     dp.include_router(search_handler.router)
-    dp.include_router(chat_handler.router)
     dp.include_router(referral_handler.router)   # ← to'g'ri joy: dp dan KEYIN
     dp.include_router(menu_handler.router)
+    dp.include_router(chat_handler.router)
 
     logger.info("🚀 Bot ishga tushdi!")
 
