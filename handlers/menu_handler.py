@@ -2,9 +2,9 @@
 menu_handler.py
 
 Tuzatishlar:
-- ✅ Barcha qidiruv knopkalari va asosiy menyuda majburiy obuna tekshiruvi integratsiya qilindi.
-- ✅ Obunani tasdiqlash (check_subscription) callback handler'i qo'shildi.
-- ✅ Aiogram turlaridan CallbackQuery importi to'g'rilandi.
+- ✅ config.py faylidagi CHANNEL_ID va CHANNEL_LINK integratsiya qilindi.
+- ✅ Yangi va eski foydalanuvchilar uchun /start va Tasdiqlash (check_subscription) zanjiri to'qnashuvlarsiz ulandi.
+- ✅ Qidiruv tugmalarida ham majburiy obuna dinamik tekshiriladi.
 """
 
 import logging
@@ -16,44 +16,40 @@ from database import get_user, is_premium
 from keyboards import kb_main_menu, kb_premium_plans
 from handlers.search_handler import start_search
 
+# 📥 Config faylingizdan kanal sozlamalarini import qilamiz
+from config import CHANNEL_ID, CHANNEL_LINK
+
 logger = logging.getLogger(__name__)
 router = Router()
 
-# ============================================================
-# MAJBURIY OBUNA SOZLAMALARI
-# ============================================================
-# Bu yerga bot tekshirishi kerak bo'lgan kanallarni yozing.
-# Bot ushbu kanallarda admin bo'lishi shart!
-CHANNELS = ["@tanishuvlarbotichannel"] 
 
+# ============================================================
+# MAJBURIY OBUNA FUNKSIYALARI (CONFIG ASOSIDA)
+# ============================================================
 
 async def check_user_subscription(bot: Bot, user_id: int) -> bool:
-    """Foydalanuvchi hamma majburiy kanallarga a'zo bo'lganini tekshiradi"""
-    for channel in CHANNELS:
-        try:
-            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status in ["left", "kicked"]:
-                return False
-        except Exception as e:
-            logger.error(f"Kanal tekshirishda xatolik ({channel}): {e}")
-            # Agar bot kanalda admin bo'lmasa yoki kanal topilmasa xato bermasligi uchun ehtiyotkorlik
+    """Foydalanuvchi config'dagi majburiy kanalga a'zo bo'lganini tekshiradi"""
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        if member.status in ["left", "kicked"]:
             return False
-    return True
+        return True
+    except Exception as e:
+        logger.error(f"Kanal tekshirishda xatolik ({CHANNEL_ID}): {e}")
+        # Agar bot kanalda admin bo'lmasa yoki kanal topilmasa xato bermasligi uchun ehtiyotkorlik
+        return False
 
 
 async def send_sub_keyboards(message: Message):
-    """Obuna bo'lmagan foydalanuvchiga kanallar ro'yxatini ko'rsatish"""
-    buttons = []
-    for idx, ch in enumerate(CHANNELS, start=1):
-        link = f"https://t.me/{ch.replace('@', '')}"
-        buttons.append([InlineKeyboardButton(text=f"🔗 {idx}-kanalga a'zo bo'lish", url=link)])
-    
-    buttons.append([InlineKeyboardButton(text="🔄 Obunani tasdiqlash", callback_data="check_subscription")])
-    kb_sub = InlineKeyboardMarkup(inline_keyboard=buttons)
+    """Obuna bo'lmagan foydalanuvchiga config'dagi havola bilan tugmalarni ko'rsatish"""
+    kb_sub = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 Kanalga a'zo bo'lish", url=CHANNEL_LINK)],
+        [InlineKeyboardButton(text="🔄 Obunani tasdiqlash", callback_data="check_subscription")]
+    ])
     
     await message.answer(
-        "⚠️ <b>Botdan foydalanish uchun quyidagi kanallarga a'zo bo'lishingiz shart!</b>\n\n"
-        "A'zo bo'lib, keyin <i>Tasdiqlash</i> tugmasini bosing.",
+        "⚠️ <b>Botdan foydalanish uchun rasmiy kanalimizga a'zo bo'lishingiz shart!</b>\n\n"
+        "Kanalga a'zo bo'lib, keyin pastdagi <i>Obunani tasdiqlash</i> tugmasini bosing.",
         reply_markup=kb_sub,
         parse_mode="HTML"
     )
@@ -108,7 +104,7 @@ def kb_premium_with_referral():
 
 
 # ============================================================
-# ASOSIY MENYU
+# ASOSIY MENYU HIMOYA TIZIMI
 # ============================================================
 
 @router.message(F.text == "🏠 Asosiy menyu")
@@ -121,7 +117,7 @@ async def main_menu_handler(message: Message):
 
 
 # ============================================================
-# QIDIRUV KNOPKALARI
+# QIDIRUV KNOPKALARI HIMOYA TIZIMI
 # ============================================================
 
 @router.message(F.text == "🔍 Muloqotchi qidirish")
@@ -182,25 +178,49 @@ async def menu_search_male_locked(message: Message):
 
 
 # ============================================================
-# PREMIUM / REFERRAL / SUB CALLBACKS
+# OBUNANI TASDIQLASH (CALLBACK) — ENG ASOSIY ZANJIR KO'PRIYI
 # ============================================================
 
 @router.callback_query(F.data == "check_subscription")
-async def cb_check_subscription(callback: CallbackQuery):
+async def cb_check_subscription(callback: CallbackQuery, state: FSMContext):
     """Foydalanuvchi obunani tasdiqlash tugmasini bosganda ishlaydi"""
-    is_subbed = await check_user_subscription(callback.bot, callback.from_user.id)
+    user_id = callback.from_user.id
+    is_subbed = await check_user_subscription(callback.bot, user_id)
     
     if is_subbed:
         try:
             await callback.message.delete()  # Kanallar ro'yxati matnini o'chirib tashlaymiz
         except Exception:
             pass
-        # Asosiy menyuni yuboramiz
-        await send_main_menu(callback.bot, callback.message.chat.id, callback.from_user.id)
-        await callback.answer("🎉 Obuna tasdiqlandi! Asosiy menyuga xush kelibsiz.", show_alert=True)
+        
+        # Foydalanuvchi bazada bormi yoki yo'qligini tekshiramiz
+        user = await get_user(user_id)
+        
+        if not user:
+            # 🟢 YANGI FOYDALANUVCHI ESA -> RO'YXATDAN O'TISHGA
+            from handlers.registration_handler import RegState
+            from keyboards import kb_gender
+            
+            await state.set_state(RegState.gender)
+            await callback.message.answer(
+                "🎉 Obuna tasdiqlandi!\n\n"
+                "🤖 Botdan foydalanish uchun ro'yxatdan o'ting.\n"
+                "🚻 <b>Jinsingizni tanlang:</b>", 
+                reply_markup=kb_gender(),
+                parse_mode="HTML"
+            )
+        else:
+            # 🔵 ESKI FOYDALANUVCHI ESA -> ASOSIY MENYUGA
+            await send_main_menu(callback.bot, callback.message.chat.id, user_id)
+            await callback.answer("🎉 Obuna tasdiqlandi! Xush kelibsiz.", show_alert=True)
+            
     else:
-        await callback.answer("❌ Siz hali barcha kanallarga a'zo bo'lmadingiz!", show_alert=True)
+        await callback.answer("❌ Siz hali kanalga a'zo bo'lmadingiz!", show_alert=True)
 
+
+# ============================================================
+# PREMIUM / REFERRAL REJALARI
+# ============================================================
 
 @router.callback_query(F.data == "show_premium_plans")
 async def cb_show_premium_plans(callback: CallbackQuery):
