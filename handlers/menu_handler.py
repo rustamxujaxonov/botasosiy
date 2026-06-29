@@ -24,7 +24,7 @@ router = Router()
 # ============================================================
 # Bu yerga bot tekshirishi kerak bo'lgan kanallarni yozing.
 # Bot ushbu kanallarda admin bo'lishi shart!
-CHANNELS = ["@SizningKanalingizUsernamu"] 
+CHANNELS = ["@tanishuvlarbotichannel"] 
 
 
 async def check_user_subscription(bot: Bot, user_id: int) -> bool:
