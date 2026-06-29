@@ -99,6 +99,12 @@ class PaymentRequest(Base):
     status           = Column(String(20), default="pending")
     created_at       = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at       = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+class Referral(Base):
+    __tablename__ = "referrals"
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    inviter_id = Column(BigInteger, nullable=False, index=True)
+    invitee_id = Column(BigInteger, nullable=False, unique=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 # ============================================================
 # DB INIT — avtomatik migration bilan
@@ -494,4 +500,90 @@ async def update_payment_status(request_id: int, status: str, admin_message_id: 
         await session.execute(
             update(PaymentRequest).where(PaymentRequest.id == request_id).values(**values)
         )
+        # ============================================================
+# database.py GA QO'SHISH KERAK BO'LGAN KOD
+# ============================================================
+#
+# 1-QADAM: Modellar qismiga (User, Premium, SearchQueue, Chat dan KEYIN)
+#          Referral modelini qo'shing:
+#
+# class Referral(Base):
+#     __tablename__ = "referrals"
+#     id         = Column(Integer, primary_key=True, autoincrement=True)
+#     inviter_id = Column(BigInteger, nullable=False, index=True)
+#     invitee_id = Column(BigInteger, nullable=False, unique=True)
+#     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+#
+#
+# 2-QADAM: Fayl oxiriga (# PAYMENT bo'limidan keyin) bu funksiyalarni qo'shing:
+# ============================================================
+
+
+async def add_referral(inviter_id: int, invitee_id: int) -> bool:
+    """True = muvaffaqiyatli, False = allaqachon bor yoki o'zi-o'zi"""
+    if inviter_id == invitee_id:
+        return False
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Referral).where(Referral.invitee_id == invitee_id)
+        )
+        if result.scalar_one_or_none():
+            return False
+        session.add(Referral(inviter_id=inviter_id, invitee_id=invitee_id))
+        await session.commit()
+        return True
+
+
+async def get_referral_count(user_id: int) -> int:
+    """Foydalanuvchi nechta referral to'plaganini qaytaradi"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Referral).where(Referral.inviter_id == user_id)
+        )
+        return len(result.scalars().all())
+
+
+async def check_and_grant_referral_premium(user_id: int, bot) -> bool:
+    """
+    Har 5 referralda 1 kunlik premium beradi.
+    True = premium berildi, False = hali yetmadi yoki allaqachon berilgan.
+    """
+    count = await get_referral_count(user_id)
+    if count == 0 or count % 5 != 0:
+        return False
+
+    milestone = count // 5  # nechi marta berilishi kerak
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Premium).where(
+                Premium.user_id == user_id,
+                Premium.plan == f"referral_{milestone}"
+            )
+        )
+        if result.scalar_one_or_none():
+            return False  # bu milestone uchun allaqachon berilgan
+
+    await grant_premium(
+        user_id=user_id,
+        plan=f"referral_{milestone}",
+        days=1,
+        admin_id=0
+    )
+
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🎉 <b>Tabriklaymiz!</b>\n\n"
+                f"Siz <b>{count} ta</b> do'stni taklif qildingiz!\n"
+                "🎁 <b>1 kunlik premium</b> hisobingizga qo'shildi!\n\n"
+                "Endi jins bo'yicha qidirishdan foydalana olasiz 👍"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    return True
         await session.commit()
