@@ -30,13 +30,22 @@ router = Router()
 async def check_user_subscription(bot: Bot, user_id: int) -> bool:
     """Foydalanuvchi config'dagi majburiy kanalga a'zo bo'lganini tekshiradi"""
     try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        # 🛠 BUG FIX: Agar CHANNEL_ID raqamli bo'lsa (masalan -100...), uni int ga o'giramiz.
+        # Chunki .env fayldan ma'lumot doim string (matn) bo'lib keladi.
+        target_chat = CHANNEL_ID
+        if str(target_chat).startswith("-") or str(target_chat).isdigit():
+            target_chat = int(target_chat)
+            
+        member = await bot.get_chat_member(chat_id=target_chat, user_id=user_id)
+        
+        # Foydalanuvchi kanalda bo'lsa, statusi: 'member', 'administrator' yoki 'creator' bo'ladi
         if member.status in ["left", "kicked"]:
             return False
         return True
+        
     except Exception as e:
         logger.error(f"Kanal tekshirishda xatolik ({CHANNEL_ID}): {e}")
-        # Agar bot kanalda admin bo'lmasa yoki kanal topilmasa xato bermasligi uchun ehtiyotkorlik
+        # Agar bot kanalda admin bo'lmasa yoki kanal topilmasa tizim doim False qaytaradi
         return False
 
 
